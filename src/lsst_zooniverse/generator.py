@@ -13,29 +13,39 @@ GLYPHS = (
 )
 
 
-def lightcurve_to_json(lcs, glyphs=GLYPHS):
+def create_subject(lc_json, project, metadata={}):
+    subject = Subject()
+    subject.links.project = project
+    subject.add_location(
+        lc_json,
+        media_type="application/json",
+    )
+
+    subject.metadata.update(metadata)
+    network_retry(subject.save)
+    return subject
+
+
+def lightcurve_to_json(lcs, labels="Lightcurve", glyphs=GLYPHS):
     if not is_list_like(lcs):
         lcs = [lcs]
 
+    if not is_list_like(labels):
+        labels = [labels] * len(lcs)
+
     json_data = []
 
-    for lc, (color, glyph) in zip(lcs, cycle(glyphs)):
-        if lc.mask is not None:
-            ts_rows = lc[~lc.mask["flux"]]
-        else:
-            ts_rows = lc
-
+    for lc, label, (color, glyph) in zip(lcs, labels, cycle(glyphs)):
         json_data.append(
             {
                 "seriesData": [
-                    {"x": row["time"].jd, "y": float(row["flux"].value)}
-                    for row in ts_rows
-                    if not numpy.isnan(row["flux"].value)
+                    {"x": x, "y": y}
+                    for (x, y) in zip(lc["midpointMjdTai"], lc["psfFlux"])
                 ],
                 "seriesOptions": {
                     "color": color,
                     "glyph": glyph,
-                    "label": "Lightcurve",
+                    "label": label,
                 },
             }
         )
@@ -51,14 +61,7 @@ def lightcurve_to_json_file(*args, **kwargs):
     return f
 
 
-def subject_creator(lc_json, metadata, project):
-    subject = Subject()
-    subject.links.project = project
-    subject.add_location(
-        lc_json,
-        media_type="application/json",
+def lightcurve_to_subject(lcs, project, metadata={}, glyphs=GLYPHS):
+    return create_subject(
+        lightcurve_to_json_file(lcs, glyphs=glyphs), project, metadata
     )
-
-    subject.metadata.update(metadata)
-    network_retry(subject.save)
-    return subject
