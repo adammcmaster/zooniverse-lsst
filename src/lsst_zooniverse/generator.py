@@ -80,6 +80,40 @@ class DifferenceImageLocation(ImageLocation):
     IMAGE_KEY = "Difference"
 
 
+class TripletImageLocation(ImageLocation):
+    IMAGE_LOCATIONS = (
+        ScienceImageLocation,
+        TemplateImageLocation,
+        DifferenceImageLocation,
+    )
+
+    def plot(self):
+        fig, axes = pyplot.subplots(1, len(self.IMAGE_LOCATIONS))
+        if not is_list_like(axes):
+            axes = [axes]
+
+        for ax, location_class in zip(axes, self.IMAGE_LOCATIONS):
+            image_data = location_class(self.urls).fits_data()
+            finite = np.isfinite(image_data)
+            if finite.any():
+                vmin, vmax = np.nanpercentile(image_data, (1, 99))
+            else:
+                vmin, vmax = None, None
+
+            ax.imshow(
+                image_data,
+                origin="lower",
+                cmap="gray",
+                vmin=vmin,
+                vmax=vmax,
+                interpolation="nearest",
+            )
+            ax.set_axis_off()
+
+        fig.tight_layout(pad=0)
+        return fig
+
+
 class JSONLocation(Location):
     GLYPHS = (
         ("white", "circle"),
