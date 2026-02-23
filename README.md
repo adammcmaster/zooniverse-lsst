@@ -19,7 +19,9 @@ lasair_results = ... # Perform a query using the Lasair API client
 object_ids = [row['objectId'] for row in lasair_results]
 
 subjects = []
-for _subject_index_, subject in enumerate(LSSTSubjectGenerator(objectIds, lasair=L, media_generators=[TripletImageLocation, JSONLocation]), start=1):
+for _subject_index_, subject in enumerate(
+    LSSTSubjectGenerator(objectIds, lasair=L, media_generators=[TripletImageLocation, JSONLocation]
+), start=1):
     subject.save() # Subjects are generated but still need to be saved to upload media
     subjects.append(subject)
 
