@@ -3,6 +3,8 @@
 import json
 import io
 
+from collections import defaultdict
+
 from astropy.io import fits
 
 from itertools import cycle
@@ -19,9 +21,10 @@ from .lists import is_list_like
 class Location(object):
     """Base location wrapper for media that can be uploaded to a subject."""
 
-    def __init__(self, urls):
+    def __init__(self, urls, photometry):
         """Store source URLs or payload references used by subclasses."""
         self.urls = urls
+        self.photometry = photometry
 
     def as_file(self):
         """Return a file-like object and MIME type tuple for upload."""
@@ -113,7 +116,7 @@ class TripletImageLocation(ImageLocation):
             axes = [axes]
 
         for ax, location_class in zip(axes, self.IMAGE_LOCATIONS):
-            image_data = location_class(self.urls).fits_data()
+            image_data = location_class(self.urls, self.photometry).fits_data()
             finite = np.isfinite(image_data)
             if finite.any():
                 vmin, vmax = np.nanpercentile(image_data, (1, 99))
@@ -152,8 +155,14 @@ class JSONLocation(Location):
 
     def generate(self, labels="Lightcurve", glyphs=GLYPHS):
         """Build serialized light curve JSON for one or more series."""
-        if not is_list_like(lcs):
-            lcs = [lcs]
+        lcs = defaultdict(lambda: defaultdict(list))
+
+        for p in self.photometry:
+            lcs[p["band"]]["midpointMjdTai"].append(p["midpointMjdTai"])
+            lcs[p["band"]]["psfFlux"].append(p["psfFlux"])
+            lcs[p["band"]]["psfFluxErr"].append(p["psfFluxErr"])
+
+        lcs = list(lcs.values())
 
         if not is_list_like(labels):
             labels = [labels] * len(lcs)
@@ -200,11 +209,13 @@ class LSSTSubjectGenerator(object):
         self.lasair = lasair
         self.obj_ids = iter(obj_ids)
         self.obj_image_urls = None
+        self.obj_photometry = None
+        self.current_obj = None
         self.media_generators = media_generators
 
-    def generate(self, obj):
+    def generate(self, urls, photometry):
         """Build a subject for a single Lasair image URL payload."""
-        locations = [g(obj).as_file() for g in self.media_generators]
+        locations = [g(urls, photometry).as_file() for g in self.media_generators]
         subject = Subject()
 
         for loc_data, mime_type in locations:
@@ -216,25 +227,27 @@ class LSSTSubjectGenerator(object):
         """Return this generator as an iterator."""
         return self
 
+    def _parse_obj(self, obj_id):
+        self.current_obj = self.lasair.object(obj_id, lasair_added=True)
+        self.obj_image_urls = iter(self.current_obj["lasairData"]["imageUrls"])
+
+        self.obj_photometry = defaultdict(list)
+        for s in self.current_obj["diaSourcesList"]:
+            self.obj_photometry[s["diaSourceId"]].append(s)
+
     def __next__(self):
         """Fetch the next image URL group and build a subject."""
         if self.obj_image_urls is not None:
             try:
                 next_urls = next(self.obj_image_urls)
+                next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
             except StopIteration:
-                self.obj_image_urls = iter(
-                    self.lasair.object(next(self.obj_ids))["lasairData"]["imageUrls"]
-                )
+                self._parse_obj(next(self.obj_ids))
                 next_urls = next(self.obj_image_urls)
+                next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
         else:
-            self.obj_image_urls = iter(
-                self.lasair.object(
-                    next(self.obj_ids),
-                    lasair_added=True,
-                )[
-                    "lasairData"
-                ]["imageUrls"],
-            )
+            self._parse_obj(next(self.obj_ids))
             next_urls = next(self.obj_image_urls)
+            next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
 
-        return self.generate(next_urls)
+        return self.generate(next_urls, next_photometry)
