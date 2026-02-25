@@ -2,6 +2,7 @@
 
 import json
 import io
+import logging
 
 from collections import defaultdict
 
@@ -16,6 +17,8 @@ from panoptes_client import Subject
 from lasair import lasair_client
 
 from .lists import is_list_like
+
+logger = logging.getLogger(__name__)
 
 
 class Location(object):
@@ -36,6 +39,7 @@ class ImageLocation(Location):
 
     def as_file(self):
         """Render the image plot to a PNG file-like buffer."""
+        logger.debug("Rendering image location to PNG for %s", self.__class__.__name__)
         fig = self.plot()
         img_buf = io.BytesIO()
         fig.savefig(img_buf, format="png")
@@ -45,6 +49,10 @@ class ImageLocation(Location):
 
     def fits_data(self):
         """Extract the first 2D array from the FITS file for this image key."""
+        fits_url = self.urls.get(self.IMAGE_KEY)
+        logger.debug(
+            "Loading FITS data for key %s from %s", self.IMAGE_KEY, fits_url
+        )
         with fits.open(self.urls[self.IMAGE_KEY], memmap=False) as hdul:
             for hdu in hdul:
                 data = getattr(hdu, "data", None)
@@ -54,6 +62,11 @@ class ImageLocation(Location):
                     continue
                 data = np.squeeze(data)
                 if data.ndim == 2:
+                    logger.debug(
+                        "Loaded 2D FITS image for key %s with shape %s",
+                        self.IMAGE_KEY,
+                        data.shape,
+                    )
                     return data
         raise ValueError(
             f"No 2D image data found in FITS file for key {self.IMAGE_KEY}"
@@ -61,6 +74,7 @@ class ImageLocation(Location):
 
     def plot(self):
         """Create a matplotlib figure for this FITS image."""
+        logger.debug("Plotting %s", self.__class__.__name__)
         image_data = self.fits_data()
         finite = np.isfinite(image_data)
         if finite.any():
@@ -111,6 +125,7 @@ class TripletImageLocation(ImageLocation):
 
     def plot(self):
         """Create a 1x3 figure containing the configured image locations."""
+        logger.debug("Plotting triplet image with %d panels", len(self.IMAGE_LOCATIONS))
         fig, axes = pyplot.subplots(1, len(self.IMAGE_LOCATIONS))
         if not is_list_like(axes):
             axes = [axes]
@@ -147,6 +162,7 @@ class JSONLocation(Location):
 
     def as_file(self):
         """Serialize generated JSON payload to a text buffer."""
+        logger.debug("Serializing JSON location for %s", self.__class__.__name__)
         d = self.generate()
         str_buf = io.StringIO()
         str_buf.write(d)
@@ -155,6 +171,7 @@ class JSONLocation(Location):
 
     def generate(self, labels="Lightcurve", glyphs=GLYPHS):
         """Build serialized light curve JSON for one or more series."""
+        logger.debug("Generating JSON lightcurve from %d photometry rows", len(self.photometry))
         lcs = defaultdict(lambda: defaultdict(list))
 
         for p in self.photometry:
@@ -212,14 +229,30 @@ class LSSTSubjectGenerator(object):
         self.obj_photometry = None
         self.current_obj = None
         self.media_generators = media_generators
+        logger.debug(
+            "Initialized %s with %d media generators",
+            self.__class__.__name__,
+            len(self.media_generators),
+        )
 
     def generate(self, urls, photometry):
         """Build a subject for a single Lasair image URL payload."""
+        dia_source_id = urls.get("diaSourceId")
+        logger.debug(
+            "Generating subject for diaSourceId=%s using media generators=%s",
+            dia_source_id,
+            [g.__name__ for g in self.media_generators],
+        )
         locations = [g(urls, photometry).as_file() for g in self.media_generators]
         subject = Subject()
 
         for loc_data, mime_type in locations:
             subject.add_location(loc_data, manual_mimetype=mime_type)
+        logger.debug(
+            "Built subject for diaSourceId=%s with %d media locations",
+            dia_source_id,
+            len(locations),
+        )
 
         return subject
 
@@ -228,12 +261,19 @@ class LSSTSubjectGenerator(object):
         return self
 
     def _parse_obj(self, obj_id):
+        logger.debug("Fetching Lasair object payload for obj_id=%s", obj_id)
         self.current_obj = self.lasair.object(obj_id, lasair_added=True)
         self.obj_image_urls = iter(self.current_obj["lasairData"]["imageUrls"])
 
         self.obj_photometry = defaultdict(list)
         for s in self.current_obj["diaSourcesList"]:
             self.obj_photometry[s["diaSourceId"]].append(s)
+        logger.debug(
+            "Parsed obj_id=%s with %d image url groups and %d diaSource entries",
+            obj_id,
+            len(self.current_obj["lasairData"]["imageUrls"]),
+            len(self.obj_photometry),
+        )
 
     def __next__(self):
         """Fetch the next image URL group and build a subject."""
@@ -242,12 +282,19 @@ class LSSTSubjectGenerator(object):
                 next_urls = next(self.obj_image_urls)
                 next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
             except StopIteration:
+                logger.debug("Exhausted image URLs for current object, moving to next obj_id")
                 self._parse_obj(next(self.obj_ids))
                 next_urls = next(self.obj_image_urls)
                 next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
         else:
+            logger.debug("Initializing first object from obj_ids iterator")
             self._parse_obj(next(self.obj_ids))
             next_urls = next(self.obj_image_urls)
             next_photometry = self.obj_photometry[next_urls["diaSourceId"]]
 
+        logger.debug(
+            "Yielding subject for diaSourceId=%s with %d photometry points",
+            next_urls.get("diaSourceId"),
+            len(next_photometry),
+        )
         return self.generate(next_urls, next_photometry)
